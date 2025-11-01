@@ -1,0 +1,44 @@
+services:
+  mlflow:
+    build:
+      context: ./mlflow_server
+      dockerfile: Dockerfile
+    container_name: mlflow-server
+    ports:
+      - "${MLFLOW_PORT:-5001}:5000"
+    volumes:
+      - ./mlflow_server/mlruns:/app/mlruns
+      - ./mlflow_server/data:/app/data
+    environment:
+      - MLFLOW_PORT=${MLFLOW_PORT:-5001}
+      - MLFLOW_HTTP_REQUEST_HEADER_PROVIDER_ALLOW_LIST=*
+    restart: unless-stopped
+    networks:
+      - ml-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: jp-reading-questions-app
+    volumes:
+      - ./app/src:/app/src
+    env_file:
+      - ./app/.env
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    restart: unless-stopped
+    networks:
+      - ml-network
+    stdin_open: true
+    tty: true
+
+networks:
+  ml-network:
+    driver: bridge
+
