@@ -39,9 +39,9 @@ class QuestionSet(BaseModel):
 
 # Create the LLM with structured output
 llm = ChatOpenAI(
-    model="gpt-4o-mini",
+    model="gpt-5-mini",
     api_key=os.getenv('OPENAI_API_KEY'),
-    temperature=0.7
+    temperature=1.0
 )
 
 # Use with_structured_output to enforce the schema

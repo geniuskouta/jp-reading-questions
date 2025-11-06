@@ -1,7 +1,28 @@
 import json
+import os
+from pathlib import Path
 from mlflow.genai.scorers import scorer
 from mlflow.entities import Feedback
 from typing import Any, Dict, Union
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
+
+# Pydantic model for structured scorer output
+class ScorerJudgment(BaseModel):
+    """Structured output for LLM-based scorers."""
+    passed: bool = Field(description="Whether the evaluation passed (True) or failed (False)")
+    reason: str = Field(description="Explanation for the judgment")
+
+# Helper function to load scorer prompts from markdown files
+def load_scorer_prompt(prompt_name: str) -> str:
+    """Load a scorer prompt from the prompts/scorers directory."""
+    prompts_dir = Path(__file__).parent / "prompts" / "scorers"
+    prompt_path = prompts_dir / f"{prompt_name}.md"
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+# Check if LLM-based scorers should be enabled (optional, costs money)
+ENABLE_LLM_SCORERS = os.getenv("ENABLE_LLM_SCORERS", "false").lower() == "true"
 
 @scorer
 def json_format_correct(outputs: Union[Dict, str]) -> Feedback:
@@ -221,3 +242,228 @@ def answer_is_valid(outputs: Union[Dict, str]) -> Feedback:
             value="yes",
             rationale=f"All {len(output_json['questions'])} questions have valid answers."
         )
+
+@scorer
+def has_sufficient_questions(outputs: Union[Dict, str]) -> Feedback:
+    """
+    Checks if the output contains a reasonable number of questions (at least 3).
+    For longer texts, expects more questions to provide comprehensive coverage.
+    """
+    try:
+        if isinstance(outputs, dict):
+            output_json = outputs
+        elif isinstance(outputs, str):
+            output_json = json.loads(outputs)
+        else:
+            raise ValueError(f"Unexpected type: {type(outputs)}")
+    except Exception as e:
+        return Feedback(
+            value="no",
+            rationale=f"Output is not valid JSON: {e}"
+        )
+
+    if "questions" not in output_json or not isinstance(output_json["questions"], list):
+        return Feedback(
+            value="no",
+            rationale="No questions found in output."
+        )
+
+    num_questions = len(output_json["questions"])
+
+    # Expect at least 3 questions
+    if num_questions < 3:
+        return Feedback(
+            value="no",
+            rationale=f"Only {num_questions} questions generated. Expected at least 3 for adequate coverage."
+        )
+
+    return Feedback(
+        value="yes",
+        rationale=f"Generated {num_questions} questions, which provides good coverage."
+    )
+
+# ============================================================================
+# LLM-based scorers (optional, enabled via ENABLE_LLM_SCORERS env variable)
+# These scorers use GPT to judge semantic quality and cost money per evaluation
+# ============================================================================
+
+if ENABLE_LLM_SCORERS:
+    @scorer
+    def question_text_relevance(outputs: Union[Dict, str], inputs: Dict) -> Feedback:
+        """
+        Uses LLM-as-judge to evaluate whether the generated questions are relevant
+        to the input Japanese text. Checks if questions actually relate to the content.
+
+        Requires: ENABLE_LLM_SCORERS=true
+        """
+        try:
+            if isinstance(outputs, dict):
+                output_json = outputs
+            elif isinstance(outputs, str):
+                output_json = json.loads(outputs)
+            else:
+                raise ValueError(f"Unexpected type: {type(outputs)}")
+        except Exception as e:
+            return Feedback(
+                value="no",
+                rationale=f"Output is not valid JSON: {e}"
+            )
+
+        if "questions" not in output_json or not isinstance(output_json["questions"], list):
+            return Feedback(
+                value="no",
+                rationale="No questions found in output."
+            )
+
+        jp_text = inputs.get("jp_text", "")
+        if not jp_text:
+            return Feedback(
+                value="no",
+                rationale="No input text provided for relevance check."
+            )
+
+        # Prepare questions summary
+        questions_summary = []
+        for i, q in enumerate(output_json["questions"]):
+            if isinstance(q, dict) and "question" in q:
+                questions_summary.append(f"{i+1}. {q['question']}")
+
+        questions_str = "\n".join(questions_summary)
+
+        # Load prompt template and format
+        prompt_template = load_scorer_prompt("question_relevance")
+        prompt = prompt_template.format(jp_text=jp_text, questions_str=questions_str)
+
+        # Use LLM with structured output
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).with_structured_output(ScorerJudgment)
+
+        try:
+            result: ScorerJudgment = llm.invoke(prompt)
+            return Feedback(
+                value="yes" if result.passed else "no",
+                rationale=f"Question relevance: {result.reason}"
+            )
+        except Exception as e:
+            return Feedback(
+                value="no",
+                rationale=f"Error during LLM evaluation: {e}"
+            )
+
+    @scorer
+    def option_quality(outputs: Union[Dict, str]) -> Feedback:
+        """
+        Uses LLM-as-judge to evaluate the quality of answer options.
+        Checks if options are plausible, distinct, and appropriate difficulty.
+
+        Requires: ENABLE_LLM_SCORERS=true
+        """
+        try:
+            if isinstance(outputs, dict):
+                output_json = outputs
+            elif isinstance(outputs, str):
+                output_json = json.loads(outputs)
+            else:
+                raise ValueError(f"Unexpected type: {type(outputs)}")
+        except Exception as e:
+            return Feedback(
+                value="no",
+                rationale=f"Output is not valid JSON: {e}"
+            )
+
+        if "questions" not in output_json or not isinstance(output_json["questions"], list):
+            return Feedback(
+                value="no",
+                rationale="No questions found in output."
+            )
+
+        # Prepare questions with options
+        questions_with_options = []
+        for i, q in enumerate(output_json["questions"]):
+            if isinstance(q, dict) and "question" in q and "options" in q:
+                options_str = "\n".join(q.get("options", []))
+                questions_with_options.append(f"問題{i+1}: {q['question']}\n選択肢:\n{options_str}")
+
+        questions_str = "\n\n".join(questions_with_options)
+
+        # Load prompt template and format
+        prompt_template = load_scorer_prompt("option_quality")
+        prompt = prompt_template.format(questions_str=questions_str)
+
+        # Use LLM with structured output
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).with_structured_output(ScorerJudgment)
+
+        try:
+            result: ScorerJudgment = llm.invoke(prompt)
+            return Feedback(
+                value="yes" if result.passed else "no",
+                rationale=f"Option quality: {result.reason}"
+            )
+        except Exception as e:
+            return Feedback(
+                value="no",
+                rationale=f"Error during LLM evaluation: {e}"
+            )
+
+    @scorer
+    def answer_correctness_check(outputs: Union[Dict, str], inputs: Dict) -> Feedback:
+        """
+        Uses LLM-as-judge to verify that the marked answer is actually correct
+        based on the input text. Checks if the answer key points to the right option.
+
+        Requires: ENABLE_LLM_SCORERS=true
+        """
+        try:
+            if isinstance(outputs, dict):
+                output_json = outputs
+            elif isinstance(outputs, str):
+                output_json = json.loads(outputs)
+            else:
+                raise ValueError(f"Unexpected type: {type(outputs)}")
+        except Exception as e:
+            return Feedback(
+                value="no",
+                rationale=f"Output is not valid JSON: {e}"
+            )
+
+        if "questions" not in output_json or not isinstance(output_json["questions"], list):
+            return Feedback(
+                value="no",
+                rationale="No questions found in output."
+            )
+
+        jp_text = inputs.get("jp_text", "")
+        if not jp_text:
+            return Feedback(
+                value="no",
+                rationale="No input text provided for answer verification."
+            )
+
+        # Prepare questions with answers
+        questions_detail = []
+        for i, q in enumerate(output_json["questions"]):
+            if isinstance(q, dict) and all(k in q for k in ["question", "options", "answer"]):
+                options_str = "\n".join(q.get("options", []))
+                questions_detail.append(
+                    f"問題{i+1}: {q['question']}\n選択肢:\n{options_str}\n正解: {q['answer']}"
+                )
+
+        questions_str = "\n\n".join(questions_detail)
+
+        # Load prompt template and format
+        prompt_template = load_scorer_prompt("answer_correctness")
+        prompt = prompt_template.format(jp_text=jp_text, questions_str=questions_str)
+
+        # Use LLM with structured output
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).with_structured_output(ScorerJudgment)
+
+        try:
+            result: ScorerJudgment = llm.invoke(prompt)
+            return Feedback(
+                value="yes" if result.passed else "no",
+                rationale=f"Answer correctness: {result.reason}"
+            )
+        except Exception as e:
+            return Feedback(
+                value="no",
+                rationale=f"Error during LLM evaluation: {e}"
+            )
