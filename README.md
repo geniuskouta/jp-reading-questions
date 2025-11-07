@@ -10,16 +10,31 @@ The question output comes with:
 
 ## Architecture
 
-- **LLM**: GPT-4o-mini with structured output (Pydantic schema validation)
-- **Framework**: LangChain for prompt management and LLM interaction
+- **LLM**: OpenAI models with structured output (Pydantic schema validation)
+- **Framework**: Unified Agent supporting both LangChain and DSPy backends
+  - LangChain: Manual prompt management with markdown files
+  - DSPy: Automatic prompt optimization with machine learning
 - **Evaluation**: MLflow for experiment tracking and scoring
 - **Infrastructure**: Docker Compose (MLflow server + App container)
 
 ## Approach
 
-- Prepare evaluation set data with Japanese text and comprehension questions
-- Use DSPy to define expected input and output with the evaluation set data
-- Use DSPy to brush up on the prompt by adding more evaluation set data
+This project supports two approaches for generating questions:
+
+### 1. Manual Prompts (LangChain)
+- Manually craft prompts in markdown files
+- Requires prompt engineering expertise
+- Good for understanding and control
+- Run with: `docker-compose exec app poetry run python src/main.py`
+
+### 2. Automatic Prompts (DSPy)
+- Automatically optimizes prompts using evaluation data
+- Learns from examples to improve quality
+- Reduces manual prompt maintenance
+- Three-step workflow:
+  1. **Setup** (`dspy_setup.py`) - Verify configuration
+  2. **Optimize** (`dspy_optimize.py`) - Generate optimized prompts (expensive, run once)
+  3. **Evaluate** (`dspy_evaluate.py`) - Use cached prompts (cheap, run many times)
 
 ## Evaluation Cycle
 
@@ -90,33 +105,69 @@ docker-compose exec app env ENABLE_LLM_SCORERS=true poetry run python src/main.p
 2. Navigate to the "jp_reading_questions_evaluation" experiment
 3. View metrics, parameters, and artifacts for each run
 
-## Project Structure
+## DSPy Workflow (Automatic Prompt Optimization)
 
+DSPy automatically generates and optimizes prompts based on your evaluation data, eliminating manual prompt engineering.
+
+### Step 1: Setup (First Time Only)
+
+Verify DSPy configuration and test the connection:
+
+```bash
+docker-compose exec app poetry run python src/dspy_setup.py
 ```
-jp-reading-questions/
-├── app/
-│   ├── src/
-│   │   ├── main.py                    # Evaluation runner
-│   │   └── jp_reading_questions/
-│   │       ├── prediction.py          # LLM prediction logic
-│   │       ├── evaluation.py          # Test dataset (4 samples)
-│   │       ├── score.py               # MLflow scorers
-│   │       └── prompts/
-│   │           ├── system.md          # System prompt (JLPT expert)
-│   │           ├── user.md            # User prompt template
-│   │           └── scorers/           # Scorer prompts (LLM-as-judge)
-│   │               ├── question_relevance.md
-│   │               ├── option_quality.md
-│   │               └── answer_correctness.md
-│   ├── Dockerfile
-│   └── pyproject.toml                 # Dependencies
-├── mlflow_server/
-│   ├── Dockerfile
-│   ├── data/                          # SQLite database
-│   └── mlruns/                        # Experiment artifacts
-├── docker-compose.yml
-└── README.md
+
+This checks:
+- DSPy installation
+- OpenAI API key
+- Model connectivity
+
+### Step 2: Optimize (Run When Data Changes)
+
+Generate optimized prompts using your evaluation dataset:
+
+```bash
+# Without LLM-based scorers (structural validation only)
+docker-compose exec app poetry run python src/dspy_optimize.py
+
+# With LLM-based scorers (semantic quality checks - costs money)
+docker-compose exec app env ENABLE_LLM_SCORERS=true poetry run python src/dspy_optimize.py
 ```
+
+**IMPORTANT**: This is expensive (uses GPT API calls)! Only run when:
+- You add new evaluation data
+- You want to improve prompt quality
+- First time setup
+
+The optimized prompts are saved to `optimized_generator_*.json` and cached for reuse.
+
+### Step 3: Evaluate (Run Anytime)
+
+Use the cached optimized prompts to run evaluations:
+
+```bash
+# Without LLM-based scorers (free)
+docker-compose exec app poetry run python src/dspy_evaluate.py
+
+# With LLM-based scorers (costs money)
+docker-compose exec app env ENABLE_LLM_SCORERS=true poetry run python src/dspy_evaluate.py
+```
+
+This is cheap because it uses the cached prompts from Step 2. Run as many times as you want.
+
+### DSPy vs Manual Prompts
+
+| Aspect | Manual (LangChain) | Automatic (DSPy) |
+|--------|-------------------|------------------|
+| **Prompt Creation** | Hand-written in markdown | Auto-generated from examples |
+| **Maintenance** | Manual editing required | Automatically improves with data |
+| **Expertise Needed** | Prompt engineering skills | Data collection and evaluation |
+| **Cost** | Only inference | Optimization + inference |
+| **Control** | Full control over wording | Control via examples and metrics |
+| **Iteration Speed** | Slow (manual changes) | Fast (add data, re-optimize) |
+
+**Recommendation**: Use Manual approach for understanding and initial setup. Switch to DSPy once you have 10+ quality evaluation examples.
+
 
 ## Evaluation Dataset
 
@@ -151,19 +202,16 @@ evaluation_dataset.append({
 })
 ```
 
-## Environment Variables
+## Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENAI_API_KEY` | (required) | OpenAI API key for GPT models |
-| `MLFLOW_TRACKING_URI` | `http://mlflow:5000` | MLflow server URL |
-| `ENABLE_LLM_SCORERS` | `false` | Enable semantic quality scorers (costs money) |
-| `MLFLOW_PORT` | `5001` | Port for MLflow UI |
+See `app/.env.example` for environment variables.
 
 ## Future Improvements
 
-- [ ] Integrate DSPy for automatic prompt optimization
+- [x] Integrate DSPy for automatic prompt optimization
+- [x] Add LLM-as-judge scorers for semantic quality
 - [ ] Expand evaluation dataset to 50+ samples
 - [ ] Add scorer for question difficulty level
 - [ ] Implement model registry for version tracking
 - [ ] Add dashboard for metric visualization over time
+- [ ] Compare multiple DSPy optimizers (BootstrapFewShot vs MIPROv2)
