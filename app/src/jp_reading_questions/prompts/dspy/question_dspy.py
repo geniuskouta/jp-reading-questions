@@ -24,14 +24,14 @@ class QuestionGenerator(dspy.Module):
         # ChainOfThought adds reasoning steps before generating output
         self.generate = dspy.ChainOfThought(QuestionSignature)
 
-    def forward(self, jp_text: str) -> str:
+    def forward(self, jp_text: str) -> list:
         """Generate questions for the given Japanese text.
 
         Args:
             jp_text: Japanese reading passage
 
         Returns:
-            JSON string with questions array
+            List of question dicts (each with category, question, options, answer)
         """
         # DSPy handles the prompt automatically
         result = self.generate(jp_text=jp_text)
@@ -39,13 +39,9 @@ class QuestionGenerator(dspy.Module):
         # DSPy returns a QuestionSet object directly
         try:
             question_set = result.question_set
-            # Convert Pydantic model to JSON string
-            return question_set.model_dump_json(indent=2, ensure_ascii=False)
+            # Convert Pydantic model to dict and extract just the questions list
+            return question_set.model_dump()["questions"]
 
         except Exception as e:
-            # Return error-wrapped result
-            return json.dumps({
-                "error": "Failed to parse output",
-                "raw_output": str(result.question_set) if hasattr(result, 'question_set') else str(result),
-                "exception": str(e)
-            }, ensure_ascii=False)
+            # Return empty list on error (or could raise exception)
+            return []

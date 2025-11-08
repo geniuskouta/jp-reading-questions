@@ -2,13 +2,16 @@
 Question generator agent supporting both LangChain and DSPy backends.
 """
 import os
-from typing import Optional
+from typing import Optional, Type, TypeVar
 import dspy
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel
 from jp_reading_questions.models.question_model import QuestionSet
 from jp_reading_questions.prompts.dspy.question_dspy import QuestionGenerator
 from jp_reading_questions.prompts.prompt_loader import load_prompt
+
+T = TypeVar('T', bound=BaseModel)
 
 
 class Agent:
@@ -31,14 +34,19 @@ class Agent:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-    def get_agent(self, api_key: Optional[str] = None):
-        """Get LangChain LLM instance.
+    def get_agent(
+        self,
+        schema: Type[T],
+        api_key: Optional[str] = None
+    ):
+        """Get LangChain LLM instance with structured output.
 
         Args:
+            schema: Pydantic model class for structured output
             api_key: OpenAI API key (defaults to env var)
 
         Returns:
-            LangChain ChatOpenAI instance
+            LangChain chain with structured output
         """
         system_prompt = load_prompt("system.md")
         user_prompt = load_prompt("user.md")
@@ -49,7 +57,7 @@ class Agent:
             temperature=self.temperature or 1.0
         )
 
-        structured_llm = llm.with_structured_output(QuestionSet)
+        structured_llm = llm.with_structured_output(schema)
         prompt_template = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             ("user", user_prompt)

@@ -5,17 +5,18 @@ import os
 import dspy
 from jp_reading_questions.agent import Agent
 from jp_reading_questions.prompts.dspy.question_dspy import QuestionGenerator
+from jp_reading_questions.models.question_model import QuestionSet
 
 USE_DSPY = os.getenv('USE_DSPY', 'True').lower() in ('true')
 
-def predict_fn(jp_text: str) -> str:
+def predict_fn(jp_text: str) -> list:
     """Prediction function compatible with MLflow evaluation.
 
     Args:
         jp_text: Japanese reading text
 
     Returns:
-        JSON string with generated questions
+        List of question dicts (each with category, question, options, answer)
     """
     # Initialize on first call
     if not hasattr(predict_fn, '_initialized'):
@@ -26,7 +27,7 @@ def predict_fn(jp_text: str) -> str:
             dspy.configure(lm=lm)
             predict_fn._generator = QuestionGenerator()
         else:
-            predict_fn._chain = agent.get_agent()
+            predict_fn._chain = agent.get_agent(schema=QuestionSet)
 
         predict_fn._initialized = True
 
@@ -35,4 +36,4 @@ def predict_fn(jp_text: str) -> str:
         return predict_fn._generator(jp_text)
     else:
         result = predict_fn._chain.invoke({"jp_text": jp_text})
-        return result.model_dump_json()
+        return result.model_dump()["questions"]
